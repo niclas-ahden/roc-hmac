@@ -10,7 +10,7 @@ See the documentation at [https://niclas-ahden.github.io/roc-hmac/](https://nicl
 ```roc
 app [main!] {
 	pf: platform "https://github.com/niclas-ahden/basic-cli/releases/download/0.23.0/7NpDhuqoqGFedmVLvmm1zjq37GCmaFGzwr5sz4ch9wTK.tar.zst",
-    hmac: "https://github.com/niclas-ahden/roc-hmac/releases/download/0.1.0/5Ea2yTpwJBspxvneBcKVNjRNMCxZtxR3VwqxUnRTN22E.tar.zst",
+    hmac: "https://github.com/niclas-ahden/roc-hmac/releases/download/0.2.0/6ZdFvvyNmkxhzBJwXHxocvH5atdLJo2JSZAKyHbQkUQm.tar.zst",
 }
 
 import pf.Stdout
