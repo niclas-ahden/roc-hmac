@@ -5,42 +5,63 @@ import nz.NonZero
 ##
 ## ```
 ## tag = Hmac.sha256({ key: secret, message: payload })
-## ok = Hmac.verify_sha256({ key: secret, message: payload, tag: received })
+## ok = tag == Hmac.from_bytes(received)
 ## Ok(iterations) = Hmac.iterations(4096)
 ## derived = Hmac.pbkdf2_sha256({ password, salt, iterations, length: 32 })
 ## ```
 ##
 ## Timing attacks: the hashing itself runs in the native SHA-256 builtin,
 ## which has no data-dependent branches or lookups, and this module never
-## branches on secret byte values. Use [Hmac.verify_sha256] to check a tag,
-## never a plain equality: it compares without short-circuiting, and it
-## compares re-MACed values (the double-HMAC pattern), so even a leaky
-## comparison reveals nothing a forger can use.
-Hmac :: [].{
+## branches on secret byte values. A computed tag is an `Hmac` value rather
+## than raw bytes, and `==` on tags is the timing-safe comparison, so the
+## obvious way to check a tag is the safe one. Compare tags, never the bytes
+## `to_bytes` hands back: `==` on those short-circuits.
+Hmac :: { bytes : List(U8) }.{
 
-	## The HMAC-SHA-256 of `message` under `key`, as its 32 raw bytes.
+	## The HMAC-SHA-256 of `message` under `key`, as an [Hmac] tag.
 	## A key longer than the 64-byte SHA-256 block is hashed first, per RFC 2104.
-	sha256 : { key : List(U8), message : List(U8) } -> List(U8)
+	sha256 : { key : List(U8), message : List(U8) } -> Hmac
 	sha256 = |{ key, message }| {
 		padded = prepare_key(key)
-		hmac_padded(xor_each(padded, 0x36), xor_each(padded, 0x5c), message)
+		Hmac.{ bytes: hmac_padded(xor_each(padded, 0x36), xor_each(padded, 0x5c), message) }
+	}
+
+	## A received tag, wrapped for comparison against a computed one.
+	## Wrong-length bytes are accepted here and fail the comparison.
+	from_bytes : List(U8) -> Hmac
+	from_bytes = |bytes| Hmac.{ bytes }
+
+	## The raw tag bytes, for sending a computed tag onward.
+	to_bytes : Hmac -> List(U8)
+	to_bytes = |tag| tag.bytes
+
+	## Whether two tags hold the same bytes. This is what `==` runs.
+	##
+	## Safe against timing attacks by construction: both sides are MACed
+	## under a key hashed from both tags before comparing, so any timing
+	## signal reveals prefixes of a MAC under a key the attacker cannot
+	## know, and turning that into a forgery would require inverting
+	## SHA-256. The comparison also inspects every byte with no early
+	## exit.
+	is_eq : Hmac, Hmac -> Bool
+	is_eq = |a, b| {
+		padded = prepare_key(Crypto.SHA256.hash(a.bytes.concat(b.bytes)).to_bytes())
+		ipad_key = xor_each(padded, 0x36)
+		opad_key = xor_each(padded, 0x5c)
+		eq_every_byte(
+			hmac_padded(ipad_key, opad_key, a.bytes),
+			hmac_padded(ipad_key, opad_key, b.bytes),
+		)
 	}
 
 	## Whether `tag` is the HMAC-SHA-256 of `message` under `key`. A tag of the
 	## wrong length is never valid.
 	##
-	## Safe against timing attacks by construction: both sides are re-MACed
-	## under a key derived from the expected tag before comparing, so any
-	## timing signal reveals prefixes of `HMAC(expected, tag)` rather than of
-	## the tag itself, and turning that into a forgery would require inverting
-	## SHA-256. The comparison also inspects every byte with no early exit.
+	## This is `Hmac.sha256({ key, message }) == Hmac.from_bytes(tag)`,
+	## here as one call for the common case of checking received tag bytes.
 	verify_sha256 : { key : List(U8), message : List(U8), tag : List(U8) } -> Bool
-	verify_sha256 = |{ key, message, tag }| {
-		expected = Hmac.sha256({ key, message })
-		remaced_tag = Hmac.sha256({ key: expected, message: tag })
-		remaced_expected = Hmac.sha256({ key: expected, message: expected })
-		eq_every_byte(remaced_tag, remaced_expected)
-	}
+	verify_sha256 = |{ key, message, tag }|
+		Hmac.sha256({ key, message }) == Hmac.from_bytes(tag)
 
 	## A PBKDF2 iteration count checked to be positive: `Ok` wrapping the
 	## checked count, or `Err(Zero)`. RFC 8018 requires at least 1.
@@ -166,10 +187,14 @@ from_hex_help = |chars, acc|
 				Err(_) => acc
 				Ok(lo) => from_hex_help(chars.drop_first(2), acc.append(nibble(hi).shl_wrap(4).bitwise_or(nibble(lo))))
 			}
-	}
+		}
 
 nibble : U8 -> U8
-nibble = |c| if c >= '0' and c <= '9' { c - '0' } else { c - 'a' + 10 }
+nibble = |c| if c >= '0' and c <= '9' {
+	c - '0'
+} else {
+	c - 'a' + 10
+}
 
 expect from_hex("00ff10") == [0, 255, 16]
 
@@ -178,39 +203,50 @@ expect from_hex("00ff10") == [0, 255, 16]
 # Test case 1
 expect
 	Hmac.sha256({ key: List.repeat(0x0b, 20), message: "Hi There".to_utf8() })
-		== from_hex("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+		== Hmac.from_bytes(from_hex("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"))
 
 # Test case 2: a key shorter than the block size
 expect
 	Hmac.sha256({ key: "Jefe".to_utf8(), message: "what do ya want for nothing?".to_utf8() })
-		== from_hex("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+		== Hmac.from_bytes(from_hex("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"))
 
 # Test case 3
 expect
 	Hmac.sha256({ key: List.repeat(0xaa, 20), message: List.repeat(0xdd, 50) })
-		== from_hex("773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe")
+		== Hmac.from_bytes(from_hex("773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe"))
 
 # Test case 4
 expect
 	Hmac.sha256({ key: from_hex("0102030405060708090a0b0c0d0e0f10111213141516171819"), message: List.repeat(0xcd, 50) })
-		== from_hex("82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b")
+		== Hmac.from_bytes(from_hex("82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b"))
 
 # Test case 5 is omitted: it truncates the tag to 128 bits, and verify_sha256 rejects wrong-length tags by design (covered below)
 
 # A key of exactly the block size is used as-is, the boundary of prepare_key
 expect
 	Hmac.sha256({ key: List.repeat(0xaa, 64), message: "Test Using Block-Size Key".to_utf8() })
-		== from_hex("d0d577cd64caf12b90eaf0053fb42f18132bf30903a0bf6a1187dbd38bbc6e07")
+		== Hmac.from_bytes(from_hex("d0d577cd64caf12b90eaf0053fb42f18132bf30903a0bf6a1187dbd38bbc6e07"))
 
 # Test case 6: a key larger than the block size is hashed first
 expect
 	Hmac.sha256({ key: List.repeat(0xaa, 131), message: "Test Using Larger Than Block-Size Key - Hash Key First".to_utf8() })
-		== from_hex("60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54")
+		== Hmac.from_bytes(from_hex("60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"))
 
 # Test case 7: key and data both larger than the block size
 expect
 	Hmac.sha256({ key: List.repeat(0xaa, 131), message: "This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.".to_utf8() })
-		== from_hex("9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2")
+		== Hmac.from_bytes(from_hex("9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2"))
+
+# ---- Tag values and their equality ----
+
+# to_bytes returns what from_bytes wrapped
+expect Hmac.from_bytes(from_hex("00ff10")).to_bytes() == [0, 255, 16]
+
+# == is true exactly when the bytes match
+expect Hmac.from_bytes([1, 2, 3]) == Hmac.from_bytes([1, 2, 3])
+expect (Hmac.from_bytes([1, 2, 3]) == Hmac.from_bytes([1, 2, 4])) == Bool.False
+expect (Hmac.from_bytes([1, 2, 3]) == Hmac.from_bytes([1, 2])) == Bool.False
+expect Hmac.from_bytes([]) == Hmac.from_bytes([])
 
 # ---- verify_sha256 ----
 
@@ -248,7 +284,12 @@ expect
 	})
 		== Bool.False
 
-# ---- PBKDF2-HMAC-SHA-256 test vectors, RFC 7914 section 11 ----
+# ---- PBKDF2-HMAC-SHA-256 test vectors ----
+#
+# No RFC gives PBKDF2-HMAC-SHA-256 vectors for RFC 6070's inputs, so the
+# "password"/"salt" cases below are that set recomputed over SHA-256, as
+# circulated in draft-josefsson-pbkdf2-test-vectors and checked against
+# OpenSSL. The "passwd"/"salt" case is RFC 7914 section 11's first vector.
 
 # A match rather than a bare Ok(...) destructure: a top-level destructure in
 # a package module panics roc test in the current compiler
@@ -262,7 +303,9 @@ iterations_from = |count|
 	}
 
 iterations_1 = iterations_from(1)
+
 iterations_2 = iterations_from(2)
+
 iterations_4096 = iterations_from(4096)
 
 expect
@@ -286,6 +329,11 @@ expect
 		length: 40,
 	})
 		== from_hex("348c89dbcbd32b2f32d814b8116e84cf2b17347ebc1800181c4e2a1fb8dd53e1c635518c7dac47e9")
+
+# RFC 7914 section 11: two whole blocks, nothing truncated
+expect
+	Hmac.pbkdf2_sha256({ password: "passwd".to_utf8(), salt: "salt".to_utf8(), iterations: iterations_1, length: 64 })
+		== from_hex("55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783")
 
 # A short length truncates the first block
 expect
