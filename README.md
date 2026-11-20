@@ -10,12 +10,25 @@ See the documentation at [https://niclas-ahden.github.io/roc-hmac/](https://nicl
 
 ```roc
 app [main!] {
-	pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.0/2yhxoR7cZPSYbyUzPWULFw8AA6QEcdsgFNRmzu7pZbst.tar.zst",
+	pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst",
 	hmac: "https://github.com/niclas-ahden/roc-hmac/releases/download/0.3.1/C4tVVXqXphwD9P271wA9BE62KikS63ZhTjWtqbkDQWMs.tar.zst",
 }
 
 import pf.Stdout
 import hmac.Hmac
+
+# `Hmac.iterations` ensures that the given iterations value is non-zero:
+Ok(iterations) = Hmac.iterations(4096)
+
+# You may have noticed that we were able to just unwrap the `Ok(iterations)`
+# here without any kind of error handling... How?
+#
+# Roc evaluates top-level values like this one during compilation, and since
+# 4096 is a positive number, it says "this can't possibly be an error". Now our
+# HMAC can be completely infallible! This only works at the top level, so
+# define the value here and use it wherever you need it. Of course you could
+# also just handle the error case as usual (e.g. if you're passing in a value
+# that's only known at runtime).
 
 main! = |_args| {
 	key = "a very secret key".to_utf8()
@@ -35,23 +48,7 @@ main! = |_args| {
 	# `Hmac` implements a safe `==` which is not vulnerable to timing attacks.
 	# `Hmac.verify_sha256` does the same, but takes bytes directly.
 
-	# Now let's do some PBKDF2
-
-	# `Hmac.iterations` ensures that the given iterations value is non-zero:
-	Ok(iterations) = Hmac.iterations(4096)
-
-	# You may have noticed that we were able to just unwrap the
-	# `Ok(iterations)` here without any kind of error handling... How?
-	#
-	# Roc's compiler is really nice and looks at the literal at compile-time
-	# and since it's a positive number, it says "this can't possibly
-	# be an error". Now our HMAC can be completely infallible!
-	#
-	# Note that Roc can only do this _before_ any effectful calls.
-	# So if you want to do this, just do it early and carry the
-	# `iterations` value with you. Of course you could also just handle
-	# the error case as usual (e.g. if you're passing in a value that's only
-	# known at runtime).
+	# Now let's do some PBKDF2, with the `iterations` from the top of the file.
 
 	# Now PBKDF2-HMAC-SHA-256 key derivation is infallible
 	derived = Hmac.pbkdf2_sha256({
